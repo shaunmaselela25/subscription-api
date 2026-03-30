@@ -1,20 +1,23 @@
 import { Router } from 'express';
 
+import authorize from '../middleware/auth.middleware.js';
+import errormiddleware from '../middleware/error.middleware.js';
+import { getUsers } from '../controllers/user.controller.js';
+import { getUserById } from '../controllers/user.controller.js';
+import { createUser } from '../controllers/user.controller.js';
+import { updateUser } from '../controllers/user.controller.js';
+import { deleteUser } from '../controllers/user.controller.js';
+
 const userRouter = Router();
 
-userRouter.get('/', (req, res) => {
-    res.send({ title: 'GET all users' })});
+userRouter.get('/', getUsers);
 
-userRouter.get('/:id', (req, res) => {
-    res.send({ title: 'GET user by ID' })});
+userRouter.get('/:id', authorize, errormiddleware, getUserById);
 
-userRouter.post('/', (req, res) => {
-    res.send({ title: 'POST new user' })});
+userRouter.post('/', createUser);
 
-userRouter.put('/:id', (req, res) => {
-    res.send({ title: 'UPDATE user by ID' })});
+userRouter.put('/:id', authorize, errormiddleware, updateUser);
 
-userRouter.delete('/:id', (req, res) => {
-    res.send({ title: 'DELETE user by ID' })});
+userRouter.delete('/:id', authorize, errormiddleware, deleteUser);
 
 export default userRouter;
