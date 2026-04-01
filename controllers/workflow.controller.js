@@ -1,15 +1,24 @@
 import dayjs from 'dayjs';
 import Subscription from '../models/subscription.model.js';
 import { createRequire } from 'module';
+import { sendReminderEmail } from '../utilities/send-email.js';
 
 const require = createRequire(import.meta.url);
 const { serve } = require('@upstash/workflow/express');
 
-const REMINDERS = [7, 5, 2, 1];
+const REMINDER_INTERVALS = [7, 5, 2, 1];
+
+const getReminderLabel = (daysBefore) => `${daysBefore} days before reminder`;
 
 export const sendReminders = serve(async (context) => {
   const { subscriptionId } = context.requirePayload;
-  const subscription = await fetchSubscription(context, subscriptionId);
+
+  if (!subscriptionId) {
+    console.error('sendReminders: missing subscriptionId in payload');
+    return;
+  }
+
+  const subscription = await fetchSubscription(subscriptionId);
 
   if (!subscription) {
     console.warn(`Subscription ${subscriptionId} not found; stopping workflow.`);
@@ -27,36 +36,59 @@ export const sendReminders = serve(async (context) => {
     return;
   }
 
-  if (renewalDate.isBefore(dayjs())) {
-    console.log(`Renewal date has passed for subscription ${subscriptionId}. Stopping workflow.`);
+  const now = dayjs();
+  if (renewalDate.isBefore(now)) {
+    console.info(`Subscription ${subscriptionId} renewal date ${renewalDate.toISOString()} is in the past. No reminders.`);
     return;
   }
 
-  for (const daysBefore of REMINDERS) {
-    const reminderDate = renewalDate.subtract(daysBefore, 'day');
-    const label = `Reminder ${daysBefore} days before`;
+  if (!subscription.user?.email) {
+    console.error(`Subscription ${subscriptionId} has no user email: cannot send reminders.`);
+    return;
+  }
 
-    if (reminderDate.isAfter(dayjs())) {
-      await sleepUntilReminder(context, label, reminderDate);
+  for (const daysBefore of REMINDER_INTERVALS) {
+    const reminderDate = renewalDate.subtract(daysBefore, 'day');
+    const reminderType = getReminderLabel(daysBefore);
+    const workflowTask = `subscription-${subscriptionId}-${daysBefore}-days`; 
+
+    if (reminderDate.isAfter(now)) {
+      console.log(`Waiting for ${reminderType} on ${reminderDate.toISOString()}`);
+      await context.sleepUntil(workflowTask, reminderDate.toDate());
+    } else {
+      console.log(`Reminder date passed for ${reminderType}, sending immediately.`);
     }
 
-    await triggerReminder(context, label, subscription);
+    if(dayjs().isSame(reminderDate, 'day')) {
+         await triggerReminder(context, workflowTask, reminderType, subscription);
+    }
   }
 });
 
-const fetchSubscription = async (_context, subscriptionId) => {
-  return await Subscription.findById(subscriptionId).populate('user', 'name email');
+const fetchSubscription = async (subscriptionId) => {
+  return Subscription.findById(subscriptionId).populate('user', 'name email');
 };
 
-const sleepUntilReminder = async (context, label, date) => {
-  console.log(`Sleeping until ${label} reminder at ${date.toISOString()}`);
-  await context.sleepUntil(label, date.toDate());
-};
+const triggerReminder = async (context, taskName, reminderType, subscription) => {
+  return context.run(taskName, async () => {
+    const recipient = subscription.user?.email;
+    if (!recipient) {
+      throw new Error(`No recipient email for subscription ${subscription._id}`);
+    }
 
-const triggerReminder = async (context, label, subscription) => {
-  return await context.run(label, async () => {
-    console.log(`Triggering ${label} reminder for subscription ${subscription._id}`);
-    // TODO: Add actual notification dispatch (email/SMS/push)
-    return { status: 'sent', label };
+    console.log(`Triggering ${reminderType} for subscription ${subscription._id} (${recipient})`);
+
+    const result = await sendReminderEmail({
+      to: recipient,
+      type: reminderType,
+      subscription,
+    });
+
+    return {
+      status: 'sent',
+      reminderType,
+      sentAt: new Date().toISOString(),
+      emailResponse: result?.response,
+    };
   });
 };
